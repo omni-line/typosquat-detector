@@ -1,0 +1,28 @@
+name: corpus
+
+on:
+  schedule:
+    - cron: "0 6 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.22.x"
+      - name: Update corpus
+        run: make corpus
+      - name: Open PR if changed
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore: refresh popular package corpus"
+          title: "chore: refresh popular package corpus"
+          body: Automated monthly refresh of embedded npm/PyPI top-package snapshots.
+          branch: chore/corpus-refresh

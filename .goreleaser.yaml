@@ -1,0 +1,42 @@
+version: 2
+
+project_name: typosquat-detector
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: typosquat-detector
+    main: ./cmd/typosquat-detector
+    binary: typosquat-detector
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X github.com/omni-line/typosquat-detector/internal/version.Version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+
+release:
+  draft: false
+  prerelease: auto
