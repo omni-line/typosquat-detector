@@ -74,11 +74,9 @@ func resolve(key, spec string) (name, version string, ok bool) {
 			return "", "", false
 		}
 	}
-	// github shorthand user/repo
-	if !strings.HasPrefix(key, "@") && strings.Count(key, "/") == 1 && !strings.Contains(spec, ":") {
-		if strings.Contains(lower, "/") && !strings.ContainsAny(spec, "<>=") {
-			// dependency key is the package name for normal entries
-		}
+	// "user/repo#ref" GitHub shorthand, bare paths, and tarballs.
+	if strings.Contains(spec, "/") || strings.HasSuffix(lower, ".tgz") || strings.HasSuffix(lower, ".tar.gz") {
+		return "", "", false
 	}
 	return key, spec, true
 }
