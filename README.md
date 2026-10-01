@@ -1,0 +1,1 @@
+# typosquat-detector
