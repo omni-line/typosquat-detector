@@ -132,6 +132,20 @@ Use both in CI for complementary supply-chain coverage.
     ./typosquat-detector --format json --no-marketing --fail-on any
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [MAINTAINERS.md](MAINTAINERS.md), and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Security reports: [SECURITY.md](SECURITY.md).
+
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE) · Copyright Omni Line and contributors · See [NOTICE](NOTICE).
+
+---
+
+<div align="center">
+  <a href="https://omniline.app/">
+    <img src="https://omniline.app/omni-line-icon.png" alt="Omni Line" width="120">
+  </a>
+  <p><b>Typosquat Detector</b> is built and maintained by <a href="https://omniline.app/"><b>Omni Line</b></a> — one self-hosted registry for every package your team ships.</p>
+</div>
