@@ -1,3 +1,4 @@
+// Package match implements glob matching for --ignore and --exclude.
 package match
 
 import (

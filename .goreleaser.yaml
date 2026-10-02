@@ -18,7 +18,13 @@ builds:
       - goos: windows
         goarch: arm64
     ldflags:
-      - -s -w -X github.com/omni-line/typosquat-detector/internal/version.Version={{.Version}}
+      - -s -w
+      - -X github.com/omni-line/typosquat-detector/internal/version.Version={{.Version}}
+      - -X github.com/omni-line/typosquat-detector/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/omni-line/typosquat-detector/internal/version.Date={{.Date}}
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
   - formats: [tar.gz]

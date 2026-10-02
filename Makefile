@@ -1,7 +1,11 @@
-.PHONY: build test lint fmt vet clean corpus
+.PHONY: build test race lint fmt vet fuzz vuln clean corpus
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X github.com/omni-line/typosquat-detector/internal/version.Version=$(VERSION)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+PKG     := github.com/omni-line/typosquat-detector/internal/version
+LDFLAGS := -s -w -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
+FUZZTIME ?= 30s
 
 build:
 	@mkdir -p bin
@@ -9,6 +13,9 @@ build:
 
 test:
 	go test ./...
+
+race:
+	go test -race ./...
 
 vet:
 	go vet ./...
@@ -19,6 +26,16 @@ fmt:
 lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not installed; running go vet only"; go vet ./...; exit 0; }
 	golangci-lint run ./...
+
+# Fuzz every parser of untrusted input plus the distance kernel.
+fuzz:
+	go test ./internal/distance -run='^$$' -fuzz=FuzzWithin -fuzztime=$(FUZZTIME)
+	go test ./internal/manifest/npm -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
+	go test ./internal/manifest/pypi -run='^$$' -fuzz=FuzzParseRequirements -fuzztime=$(FUZZTIME)
+	go test ./internal/manifest/pypi -run='^$$' -fuzz=FuzzParsePyProject -fuzztime=$(FUZZTIME)
+
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 corpus:
 	go run ./scripts/update-corpus -out internal/corpus

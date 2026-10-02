@@ -1,9 +1,45 @@
-linters:
-  enable:
-    - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
 run:
   timeout: 5m
+
+linters:
+  enable:
+    - bodyclose
+    - errcheck
+    - errorlint
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nolintlint
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+
+linters-settings:
+  gosec:
+    excludes:
+      # The scanner's job is to read files under a user-supplied root; reads
+      # go through manifest.ReadFile which rejects non-regular files.
+      - G304
+  revive:
+    rules:
+      - name: exported
+      - name: package-comments
+      - name: var-naming
+      - name: indent-error-flow
+      - name: error-strings
+      - name: errorf
+      - name: unused-parameter
+        disabled: true
+
+issues:
+  exclude-rules:
+    # update-corpus writes world-readable data files committed to the repo.
+    - path: scripts/
+      linters: [gosec]
+      text: "G301|G306"
+    # Fmt-style writes to in-memory buffers or the terminal cannot usefully fail.
+    - linters: [errcheck]
+      text: "fmt.Fprint"

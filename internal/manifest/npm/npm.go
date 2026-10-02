@@ -1,6 +1,8 @@
+// Package npm parses package.json manifests.
 package npm
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -9,10 +11,11 @@ import (
 	"github.com/omni-line/typosquat-detector/internal/manifest"
 )
 
+// Groups are the package.json sections that declare registry dependencies.
 var Groups = []string{"dependencies", "devDependencies", "optionalDependencies", "peerDependencies"}
 
 var skipPrefixes = []string{
-	"file:", "link:", "workspace:", "portal:",
+	"file:", "link:", "workspace:", "portal:", "patch:",
 	"git:", "git+", "github:", "gitlab:", "bitbucket:", "gist:",
 	"http:", "https:", "./", "../", "/", "~/",
 }
@@ -59,6 +62,9 @@ func Parse(data []byte) ([]manifest.Dependency, error) {
 	return out, nil
 }
 
+// resolve returns the registry package a dependency entry installs. Aliases
+// ("x": "npm:real@1") resolve to the aliased target, which is what actually
+// gets downloaded.
 func resolve(key, spec string) (name, version string, ok bool) {
 	spec = strings.TrimSpace(spec)
 	lower := strings.ToLower(spec)
@@ -82,37 +88,38 @@ func resolve(key, spec string) (name, version string, ok bool) {
 }
 
 func keyLine(data []byte, section, key string) int {
-	needle := []byte(`"` + key + `"`)
-	sec := []byte(`"` + section + `"`)
-	start := bytesIndex(data, sec)
+	start := bytes.Index(data, []byte(`"`+section+`"`))
 	if start < 0 {
 		return 0
 	}
-	rest := data[start:]
-	off := bytesIndex(rest, needle)
+	off := bytes.Index(data[start:], []byte(`"`+key+`"`))
 	if off < 0 {
 		return 0
 	}
 	return manifest.LineAt(data, start+off)
 }
 
-func bytesIndex(data, needle []byte) int {
-	return strings.Index(string(data), string(needle))
-}
-
-// Normalize lowercases unscoped names; leaves scopes intact aside from trim.
+// Normalize returns the comparison key for an npm name. The registry only
+// accepts lowercase names for new packages, so case is not significant.
 func Normalize(name string) string {
-	return strings.TrimSpace(name)
+	return strings.ToLower(strings.TrimSpace(name))
 }
 
 // Scope returns "@org" for scoped packages, or "".
 func Scope(name string) string {
+	scope, _ := Split(name)
+	return scope
+}
+
+// Split separates "@org/pkg" into ("@org", "pkg"). Unscoped names return
+// ("", name).
+func Split(name string) (scope, leaf string) {
 	if !strings.HasPrefix(name, "@") {
-		return ""
+		return "", name
 	}
 	i := strings.Index(name, "/")
-	if i <= 1 {
-		return ""
+	if i <= 1 || i+1 >= len(name) {
+		return "", name
 	}
-	return name[:i]
+	return name[:i], name[i+1:]
 }

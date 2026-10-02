@@ -11,16 +11,25 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        go-version: ["1.22.x"]
+        os: [ubuntu-latest]
+        # Minimum supported version (go.mod) and the current stable release.
+        go-version: ["1.20.x", "stable"]
+        include:
+          - os: macos-latest
+            go-version: stable
+          - os: windows-latest
+            go-version: stable
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ matrix.go-version }}
       - name: Format check
+        if: runner.os == 'Linux'
         run: |
           unformatted=$(gofmt -l $(find . -name '*.go' -not -path './vendor/*'))
           if [ -n "$unformatted" ]; then
@@ -29,9 +38,33 @@ jobs:
             exit 1
           fi
       - run: go vet ./...
+      - run: go test -race ./...
+        if: runner.os != 'Windows'
       - run: go test ./...
+        if: runner.os == 'Windows'
+      - run: make build
+        if: runner.os != 'Windows'
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.22.x"
       - uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6
         with:
           version: v1.61.0
           verify: false
-      - run: make build
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: stable
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: Fuzz parsers (smoke)
+        run: make fuzz FUZZTIME=15s
