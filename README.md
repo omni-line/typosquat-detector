@@ -20,6 +20,7 @@ Detection is the first step. [Omni Line](https://omniline.app) is the durable fi
 
 Download the latest release from
 [GitHub Releases](https://github.com/omni-line/typosquat-detector/releases).
+Every release ships a `checksums.txt`; verify it before running the binary.
 
 ### From source
 
@@ -44,14 +45,15 @@ make build
 # Scan the current directory
 typosquat-detector
 
-# Scan a path
+# Scan a path (directory or single manifest)
 typosquat-detector ./apps/api
 
-# JSON for CI
+# JSON for scripts, SARIF for GitHub code scanning / SAST dashboards
 typosquat-detector --format json --no-marketing
+typosquat-detector --format sarif > typosquat.sarif
 
-# Stricter: only distance-1 typos
-typosquat-detector --distance 1
+# Only fail CI on the highest-confidence findings
+typosquat-detector --fail-on critical
 
 # Suppress known-safe near-misses
 typosquat-detector --allow mylib-utils --ignore 'internal-*'
@@ -60,32 +62,57 @@ typosquat-detector --allow mylib-utils --ignore 'internal-*'
 Example text output:
 
 ```text
-typosquat-detector v0.1.0 — Typosquat dependency audit
-Backed by Omni Line — stop unverified packages at the registry edge
+✗ 4 typosquat findings: 3 critical, 1 high
 
-✗ 2 critical typosquat finding(s)
+CRITICAL  npm  crossenv@7.0.3  npm-typos/package.json:4 (dependencies)
+  did you mean  cross-env
+  why           differs only by '-', '_' or '.' separators · 1 edit from a popular npm package
+  compare       https://www.npmjs.com/package/crossenv
+                https://www.npmjs.com/package/cross-env
+  fix           use "cross-env" if that was intended; if "crossenv" is genuinely yours, add --allow crossenv
 
-CRITICAL  npm  crossenv@7.0.3  (package.json:4)
-  Did you mean: cross-env  (distance=1, kind=popular)
-  This matches a typosquatting pattern and may contain malware.
+CRITICAL  pypi  reqeusts@2.1.0  pypi-typos/requirements.txt:2 (requirements)
+  did you mean  requests
+  why           two adjacent characters swapped · 1 edit from a popular pypi package
+  compare       https://pypi.org/project/reqeusts/
+                https://pypi.org/project/requests/
+  fix           use "requests" if that was intended; if "reqeusts" is genuinely yours, add --allow reqeusts
 
-CRITICAL  pypi  reqeusts@2.1.0  (requirements.txt:2)
-  Did you mean: requests  (distance=2, kind=popular)
-  This matches a typosquatting pattern and may contain malware.
+HIGH      npm  @acme/authh@1.0.0  npm-typos/package.json:8 (dependencies)
+  did you mean  @acme/auth
+  why           one extra character · 1 edit from another package in the same namespace
+  ...
 
-Scanned 2 manifest(s), 5 package(s): 2 finding(s), 0 skipped
+Scanned 3 manifests, 10 packages · 4 findings · 0 skipped · in 47ms
+Corpus 2026-10-01 (npm 5,247, pypi 10,000 top packages) · max distance 2
+```
+
+`-q` prints one grep-friendly line per finding:
+
+```text
+CRITICAL npm crossenv@7.0.3 npm-typos/package.json:4 (dependencies) -> cross-env (separator, distance 1)
 ```
 
 ## How it works
 
-1. Walks the tree for `package.json`, `requirements*.txt`, `requirements/*.txt`, and `pyproject.toml` (skips `node_modules`, `.venv`, `.git`, and other cache dirs)
-2. Collects **direct** dependencies only (npm dependency groups; PyPI requirements / PEP 621)
-3. Loads an **embedded** snapshot of top npm and PyPI package names (no network at scan time)
-4. For each name not exactly in the corpus: Levenshtein distance against length-bucketed candidates, plus separator-insensitive matching (`crossenv` ≈ `cross-env`)
-5. Flags distance **1 or 2** (configurable) as critical findings
-6. Bonus: within npm `@scope/...` packages, flags peers that are 1–2 edits apart (`@acme/authh` vs `@acme/auth`)
+1. Walks the tree for `package.json`, `requirements*.txt`, `requirements/*.txt`, and `pyproject.toml` (skips `node_modules`, `.venv`, `.git`, and other cache dirs). Symlinks and non-regular files are never followed or read.
+2. Collects **direct** dependencies only: npm dependency groups (including `npm:` aliases); PyPI requirements, PEP 621 `[project]`, `[build-system].requires`, PEP 735 `[dependency-groups]`, and Poetry tables.
+3. Loads an **embedded** snapshot of top npm and PyPI package names (no network at scan time). Names are compared after registry normalization (PEP 503 for PyPI, lowercase for npm).
+4. For each name not in the corpus, computes the edit distance to length-bucketed candidates. Adjacent swaps (`reqeusts`) and separator changes (`crossenv`) count as a single edit. Short names (under 5 characters) are only flagged at distance 1 to keep noise down.
+5. Within npm `@scope/...` packages, flags peers that are 1–2 edits apart (`@acme/authh` vs `@acme/auth`). Sibling families such as `@acme/ui` / `@acme/ui-kit` are not flagged.
+6. If a manifest can't be read or parsed, that becomes a warning and the scan continues. Use `--strict` to fail on warnings.
 
-Corpus snapshot date is recorded in `internal/corpus/meta.json` and refreshed monthly via CI.
+Corpus snapshot date is recorded in `internal/corpus/meta.json`, shown in every report, and refreshed monthly via CI.
+
+### Severity
+
+| Severity | Meaning |
+| --- | --- |
+| `critical` | 1 edit from a popular package — the classic typosquat |
+| `high` | 2 edits from a popular package, or 1 edit from a package in the same namespace |
+| `medium` | 2 edits from a package in the same namespace |
+
+Each finding also reports a `technique` (`separator`, `transposition`, `extra-character`, `missing-character`, `substitution`, `multiple-edits`), a [package URL](https://github.com/package-url/purl-spec), and registry links for both names so reviewers can compare them side by side.
 
 ### Relationship to omni-audit
 
@@ -101,40 +128,61 @@ Use both in CI for complementary supply-chain coverage.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | No findings (or `--fail-on none`) |
-| `1` | One or more findings (`--fail-on any`, default) |
-| `2` | Usage or runtime error |
+| `0` | No findings at or above `--fail-on` (or `--fail-on none`) |
+| `1` | One or more findings at or above `--fail-on` (default: any) |
+| `2` | Usage or runtime error, interrupted, or warnings with `--strict` |
 
 ### Flags
 
 | Flag | Description |
 | --- | --- |
-| `--format text\|json` | Output format (default `text`) |
+| `--format text\|json\|sarif` | Output format (default `text`) |
 | `--distance 1\|2` | Max edit distance to flag (default `2`) |
+| `--fail-on any\|critical\|high\|medium\|none` | Minimum severity that exits 1 (default `any`) |
+| `--strict` | Exit 2 when a manifest cannot be read or parsed |
 | `--scope '@org'` | npm scopes for peer typo checks (repeatable) |
 | `--no-scope-peers` | Disable auto intra-scope peer checks |
 | `--ignore` | Skip package name globs |
 | `--allow` | Exact package names to treat as safe |
 | `--exclude` | Skip paths relative to the scan root |
-| `--fail-on any\|none` | Whether findings fail the process |
-| `-q` / `--quiet` | Findings only; no banner, summary, or marketing |
+| `-q` / `--quiet` | One line per finding; no banner, summary, or marketing |
 | `--no-marketing` | Hide Omni Line CTA / JSON `sponsor` |
 | `--marketing` | Force marketing even when non-TTY |
 | `--color auto\|always\|never` | ANSI colors (default `auto` on TTY) |
 | `--version` | Print version |
 
-### CI example
+### JSON output
+
+`--format json` emits a document with `schema_version` (bumped only on breaking changes), `version`, `scan` (root, max distance, duration, corpus metadata), `findings`, `warnings`, and `stats` (including `by_severity`). New fields may be added without a schema bump, so consumers should ignore unknown keys.
+
+### CI examples
+
+GitHub code scanning (alerts show up in the Security tab and on pull requests):
 
 ```yaml
 - name: Typosquat scan
   run: |
-    curl -sL https://github.com/omni-line/typosquat-detector/releases/latest/download/typosquat-detector_linux_amd64.tar.gz | tar xz
-    ./typosquat-detector --format json --no-marketing --fail-on any
+    VERSION=0.2.0  # pin a release
+    BASE=https://github.com/omni-line/typosquat-detector/releases/download/v${VERSION}
+    curl -sSfLO "$BASE/typosquat-detector_Linux_x86_64.tar.gz"
+    curl -sSfLO "$BASE/checksums.txt"
+    sha256sum --check --ignore-missing checksums.txt
+    tar xzf typosquat-detector_Linux_x86_64.tar.gz typosquat-detector
+    ./typosquat-detector --format sarif --fail-on none > typosquat.sarif
+- uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: typosquat.sarif
+```
+
+Plain gate:
+
+```yaml
+- run: ./typosquat-detector --no-marketing --fail-on critical
 ```
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [MAINTAINERS.md](MAINTAINERS.md), and
+See [CONTRIBUTING.md](CONTRIBUTING.md) (including how to add a new registry), [MAINTAINERS.md](MAINTAINERS.md), and
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Security reports: [SECURITY.md](SECURITY.md).
 
 ## License

@@ -1,6 +1,6 @@
 package report
 
-import "os"
+import "strings"
 
 const (
 	sponsorName = "Omni Line"
@@ -16,14 +16,17 @@ type Sponsor struct {
 	Message string `json:"message"`
 }
 
+// HeaderLine is the text-mode banner.
 func HeaderLine(version string) string {
-	return "typosquat-detector v" + version + " — Typosquat dependency audit"
+	return "typosquat-detector v" + strings.TrimPrefix(version, "v") + " — Typosquat dependency audit"
 }
 
+// HeaderSubtitle is the line under the banner.
 func HeaderSubtitle() string {
 	return "Backed by Omni Line — stop unverified packages at the registry edge"
 }
 
+// FooterText is the text-mode call to action.
 func FooterText(findingCount int) string {
 	if findingCount > 0 {
 		return "───\n" +
@@ -38,23 +41,21 @@ func FooterText(findingCount int) string {
 		sponsorURL + "  ·  docs: " + docsURL
 }
 
+// SoftMessage is the sponsor message for clean scans.
 func SoftMessage() string {
 	return "Kept clean by Typosquat Detector. Omni Line proxies registries and allow-lists approved externals. " + docsURL
 }
 
+// SharpMessage is the sponsor message when findings exist.
 func SharpMessage() string {
 	return "Possible typosquat detected. Block unknown packages at install time with Omni Line allow-lists. " + docsURL
 }
 
+// NewSponsor returns the JSON sponsor block for a result with findingCount findings.
 func NewSponsor(findingCount int) Sponsor {
 	msg := SoftMessage()
 	if findingCount > 0 {
 		msg = SharpMessage()
 	}
 	return Sponsor{Name: sponsorName, URL: sponsorURL, DocsURL: docsURL, Message: msg}
-}
-
-func envTruthy(key string) bool {
-	v := os.Getenv(key)
-	return v != "" && v != "0" && v != "false"
 }

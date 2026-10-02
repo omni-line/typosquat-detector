@@ -1,147 +1,205 @@
 // Package corpus loads embedded popular-package name snapshots.
+//
+// Each ecosystem ships one gzip-compressed JSON array of package names named
+// "<ecosystem>.json.gz" next to this file, plus a shared meta.json written by
+// scripts/update-corpus. Adding a registry only requires a new snapshot file
+// and an entry in the update script; no code changes here.
 package corpus
 
 import (
 	"bytes"
 	"compress/gzip"
+	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"strings"
+	"io/fs"
+	"sort"
 	"sync"
-
-	_ "embed"
 )
 
-//go:embed npm.json.gz
-var npmGZ []byte
+//go:embed *.json.gz meta.json
+var files embed.FS
 
-//go:embed pypi.json.gz
-var pypiGZ []byte
+// maxSnapshotSize caps decompressed snapshot size as a guard against a
+// corrupted or malicious corpus refresh.
+const maxSnapshotSize = 64 << 20
 
-//go:embed meta.json
-var metaJSON []byte
-
-// Meta describes when/how the corpus was built.
+// Meta describes when and from where the corpus was built.
 type Meta struct {
-	GeneratedAt string `json:"generated_at"`
-	NPMCount    int    `json:"npm_count"`
-	PyPICount   int    `json:"pypi_count"`
-	NPMSource   string `json:"npm_source"`
-	PyPISource  string `json:"pypi_source"`
+	GeneratedAt string                   `json:"generated_at"`
+	Ecosystems  map[string]EcosystemMeta `json:"ecosystems"`
 }
 
-// Set is an indexed popular-name corpus for one ecosystem.
-type Set struct {
-	exact map[string]struct{}
-	byLen map[int][]string
-	names []string
+// EcosystemMeta describes one ecosystem snapshot.
+type EcosystemMeta struct {
+	Count  int    `json:"count"`
+	Source string `json:"source"`
 }
+
+// ErrUnknown is returned when no snapshot exists for an ecosystem.
+var ErrUnknown = errors.New("no embedded corpus")
 
 var (
-	loadOnce sync.Once
-	npmSet   *Set
-	pypiSet  *Set
+	metaOnce sync.Once
 	meta     Meta
-	loadErr  error
+	metaErr  error
+
+	setsMu sync.Mutex
+	sets   = map[string]*Set{}
 )
 
 // MetaInfo returns corpus metadata.
-func MetaInfo() Meta {
-	ensure()
-	return meta
-}
-
-// NPM returns the npm popular-name set.
-func NPM() *Set {
-	ensure()
-	return npmSet
-}
-
-// PyPI returns the PyPI popular-name set.
-func PyPI() *Set {
-	ensure()
-	return pypiSet
-}
-
-func ensure() {
-	loadOnce.Do(func() {
-		if err := json.Unmarshal(metaJSON, &meta); err != nil {
-			loadErr = fmt.Errorf("corpus meta: %w", err)
+func MetaInfo() (Meta, error) {
+	metaOnce.Do(func() {
+		raw, err := files.ReadFile("meta.json")
+		if err != nil {
+			metaErr = fmt.Errorf("corpus meta: %w", err)
 			return
 		}
-		npmSet, loadErr = loadGzip(npmGZ)
-		if loadErr != nil {
-			return
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			metaErr = fmt.Errorf("corpus meta: %w", err)
 		}
-		pypiSet, loadErr = loadGzip(pypiGZ)
 	})
-	if loadErr != nil {
-		panic(loadErr)
-	}
+	return meta, metaErr
 }
 
-func loadGzip(raw []byte) (*Set, error) {
+// Load returns the indexed snapshot for ecosystem name, normalizing every
+// entry with normalize (nil keeps names as-is). Results are cached per name,
+// so callers must use a consistent normalizer for a given ecosystem.
+func Load(name string, normalize func(string) string) (*Set, error) {
+	setsMu.Lock()
+	defer setsMu.Unlock()
+	if s, ok := sets[name]; ok {
+		return s, nil
+	}
+	raw, err := files.ReadFile(name + ".json.gz")
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("%w for ecosystem %q", ErrUnknown, name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	names, err := decode(raw)
+	if err != nil {
+		return nil, fmt.Errorf("corpus %s: %w", name, err)
+	}
+	s := NewSet(names, normalize)
+	sets[name] = s
+	return s, nil
+}
+
+func decode(raw []byte) ([]string, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}
 	defer zr.Close()
-	data, err := io.ReadAll(zr)
+	data, err := io.ReadAll(io.LimitReader(zr, maxSnapshotSize+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(data) > maxSnapshotSize {
+		return nil, errors.New("snapshot exceeds size limit")
 	}
 	var names []string
 	if err := json.Unmarshal(data, &names); err != nil {
 		return nil, err
 	}
-	return NewSet(names), nil
+	return names, nil
+}
+
+// Set is an indexed popular-name corpus for one ecosystem. Lookups use
+// normalized keys; Display maps a key back to the registry spelling.
+type Set struct {
+	display    map[string]string
+	byLen      map[int][]string
+	byStripped map[int][]string
 }
 
 // NewSet indexes names for exact and length-bucketed lookup.
-func NewSet(names []string) *Set {
+func NewSet(names []string, normalize func(string) string) *Set {
 	s := &Set{
-		exact: make(map[string]struct{}, len(names)),
-		byLen: make(map[int][]string),
-		names: names,
+		display:    make(map[string]string, len(names)),
+		byLen:      make(map[int][]string),
+		byStripped: make(map[int][]string),
 	}
 	for _, n := range names {
-		n = strings.TrimSpace(n)
-		if n == "" {
+		key := n
+		if normalize != nil {
+			key = normalize(n)
+		}
+		if key == "" {
 			continue
 		}
-		s.exact[n] = struct{}{}
-		s.byLen[len(n)] = append(s.byLen[len(n)], n)
+		if _, dup := s.display[key]; dup {
+			continue
+		}
+		s.display[key] = n
+		s.byLen[len(key)] = append(s.byLen[len(key)], key)
+		sl := strippedLen(key)
+		s.byStripped[sl] = append(s.byStripped[sl], key)
+	}
+	for _, m := range []map[int][]string{s.byLen, s.byStripped} {
+		for _, keys := range m {
+			sort.Strings(keys)
+		}
 	}
 	return s
 }
 
-// Contains reports whether name is an exact corpus member.
-func (s *Set) Contains(name string) bool {
+// Contains reports whether key is an exact corpus member.
+func (s *Set) Contains(key string) bool {
 	if s == nil {
 		return false
 	}
-	_, ok := s.exact[name]
+	_, ok := s.display[key]
 	return ok
 }
 
-// Candidates returns corpus names whose length is within maxDist of len(name).
-func (s *Set) Candidates(name string, maxDist int) []string {
-	if s == nil {
-		return nil
+// Display returns the registry spelling for key, or key if unknown.
+func (s *Set) Display(key string) string {
+	if s != nil {
+		if d, ok := s.display[key]; ok {
+			return d
+		}
 	}
-	l := len(name)
-	var out []string
-	for d := -maxDist; d <= maxDist; d++ {
-		out = append(out, s.byLen[l+d]...)
-	}
-	return out
+	return key
 }
 
-// Len returns the number of exact names.
+// Candidates calls fn for every corpus key that could be within maxDist of
+// key, either by raw length or by separator-stripped length. A key may be
+// visited twice; callers dedupe if needed.
+func (s *Set) Candidates(key string, maxDist int, fn func(candidate string)) {
+	if s == nil {
+		return
+	}
+	l, sl := len(key), strippedLen(key)
+	for d := -maxDist; d <= maxDist; d++ {
+		for _, c := range s.byLen[l+d] {
+			fn(c)
+		}
+		for _, c := range s.byStripped[sl+d] {
+			fn(c)
+		}
+	}
+}
+
+// Len returns the number of distinct keys.
 func (s *Set) Len() int {
 	if s == nil {
 		return 0
 	}
-	return len(s.exact)
+	return len(s.display)
+}
+
+func strippedLen(s string) int {
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c != '-' && c != '_' && c != '.' {
+			n++
+		}
+	}
+	return n
 }

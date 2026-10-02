@@ -1,3 +1,4 @@
+// Package cli parses flags and runs a scan.
 package cli
 
 import (
@@ -10,7 +11,9 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/omni-line/typosquat-detector/internal/corpus"
 	"github.com/omni-line/typosquat-detector/internal/ecosystem"
 	"github.com/omni-line/typosquat-detector/internal/match"
 	"github.com/omni-line/typosquat-detector/internal/report"
@@ -36,7 +39,8 @@ type config struct {
 	format       report.Format
 	color        report.ColorMode
 	distance     int
-	failAny      bool
+	failOn       scan.Severity
+	strict       bool
 	quiet        bool
 	noMarketing  bool
 	forceMarket  bool
@@ -49,12 +53,20 @@ type config struct {
 
 var errHelp = errors.New("help requested")
 
-// Run executes the CLI and returns a process exit code.
+// Run executes the CLI and returns a process exit code. SIGINT/SIGTERM
+// cancel the scan; a second signal terminates immediately.
 func Run(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	_ = ctx
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return RunContext(ctx, args, stdout, stderr)
+}
 
+// RunContext is Run with a caller-supplied context.
+func RunContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	cfg, showVersion, err := parse(args, stderr)
 	switch {
 	case errors.Is(err, errHelp):
@@ -63,11 +75,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return report.ExitError
 	case showVersion:
-		fmt.Fprintln(stdout, version.String())
+		fmt.Fprintln(stdout, version.Long())
 		return report.ExitOK
 	}
 
-	res, err := scan.Run(cfg.root, scan.Options{
+	start := time.Now()
+	res, err := scan.Run(ctx, cfg.root, scan.Options{
 		Ecosystems:   ecosystem.Default(),
 		MaxDistance:  cfg.distance,
 		SafeIgnore:   cfg.ignore,
@@ -77,23 +90,35 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		NoScopePeers: cfg.noScopePeers,
 	})
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			err = errors.New("interrupted")
+		}
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return report.ExitError
 	}
+	elapsed := time.Since(start)
 
+	var meta *corpus.Meta
+	if m, err := corpus.MetaInfo(); err == nil {
+		meta = &m
+	}
 	stdoutFile, _ := stdout.(*os.File)
 	stderrFile, _ := stderr.(*os.File)
 	return report.Write(stdout, stderr, res, report.Options{
-		Format:      cfg.format,
-		Version:     version.String(),
-		Quiet:       cfg.quiet,
-		NoMarketing: cfg.noMarketing,
-		ForceMarket: cfg.forceMarket,
-		FailOnAny:   cfg.failAny,
-		StdoutIsTTY: report.IsTTY(stdoutFile),
-		StderrIsTTY: report.IsTTY(stderrFile),
-		StdoutPiped: !report.IsTTY(stdoutFile),
-		Color:       cfg.color,
+		Format:         cfg.format,
+		Version:        version.String(),
+		Quiet:          cfg.quiet,
+		NoMarketing:    cfg.noMarketing,
+		ForceMarketing: cfg.forceMarket,
+		FailOn:         cfg.failOn,
+		Strict:         cfg.strict,
+		StdoutIsTTY:    report.IsTTY(stdoutFile),
+		StderrIsTTY:    report.IsTTY(stderrFile),
+		Color:          cfg.color,
+		Root:           cfg.root,
+		MaxDistance:    cfg.distance,
+		Duration:       elapsed,
+		Corpus:         meta,
 	})
 }
 
@@ -102,11 +127,12 @@ func parse(args []string, stderr io.Writer) (cfg config, showVersion bool, err e
 	fs.SetOutput(stderr)
 
 	var (
-		format      = fs.String("format", "text", "output format: text|json")
+		format      = fs.String("format", "text", "output format: text|json|sarif")
 		distance    = fs.Int("distance", scan.DefaultDistance, "max edit distance to flag: 1|2")
-		failOn      = fs.String("fail-on", "any", "when to exit 1: any|none")
+		failOn      = fs.String("fail-on", "any", "exit 1 when a finding is at least: any|critical|high|medium|none")
+		strict      = fs.Bool("strict", false, "exit 2 when a manifest cannot be read or parsed")
 		colorMode   = fs.String("color", "auto", "color output: auto|always|never")
-		quiet       = fs.Bool("q", false, "findings only; suppress banner, summary, and marketing")
+		quiet       = fs.Bool("q", false, "one line per finding; suppress banner, summary, and marketing")
 		quietLong   = fs.Bool("quiet", false, "alias for -q")
 		noMarketing = fs.Bool("no-marketing", false, "hide Omni Line CTA / JSON sponsor")
 		forceMarket = fs.Bool("marketing", false, "force marketing even when non-TTY")
@@ -146,28 +172,26 @@ func parse(args []string, stderr io.Writer) (cfg config, showVersion bool, err e
 		return cfg, false, errors.New("too many path arguments (want at most one)")
 	}
 
-	switch strings.ToLower(*format) {
-	case "text":
-		cfg.format = report.FormatText
-	case "json":
-		cfg.format = report.FormatJSON
-	default:
-		return cfg, false, fmt.Errorf("invalid --format %q (want text|json)", *format)
+	if cfg.format, err = report.ParseFormat(strings.ToLower(*format)); err != nil {
+		return cfg, false, err
 	}
 	if cfg.color, err = report.ParseColorMode(*colorMode); err != nil {
 		return cfg, false, err
 	}
-	switch strings.ToLower(*failOn) {
+	switch v := strings.ToLower(strings.TrimSpace(*failOn)); v {
 	case "any":
-		cfg.failAny = true
+		cfg.failOn = scan.SeverityMedium
 	case "none":
 	default:
-		return cfg, false, fmt.Errorf("invalid --fail-on %q (want any|none)", *failOn)
+		if cfg.failOn, err = scan.ParseSeverity(v); err != nil {
+			return cfg, false, fmt.Errorf("invalid --fail-on %q (want any|critical|high|medium|none)", *failOn)
+		}
 	}
 	if *distance != 1 && *distance != 2 {
 		return cfg, false, fmt.Errorf("invalid --distance %d (want 1|2)", *distance)
 	}
 	cfg.distance = *distance
+	cfg.strict = *strict
 	cfg.ignore = match.New(ignore...)
 	cfg.exclude = match.New(exclude...)
 	cfg.allow = map[string]struct{}{}
@@ -193,10 +217,15 @@ Flags:
 `)
 	fs.PrintDefaults()
 	fmt.Fprint(w, `
+Severities:
+  critical  1 edit from a popular package
+  high      2 edits from a popular package, or 1 edit from a scope peer
+  medium    2 edits from a scope peer
+
 Exit codes:
-  0  no findings (or --fail-on none)
-  1  findings reported
-  2  usage or runtime error
+  0  no findings at or above --fail-on (or --fail-on none)
+  1  findings at or above --fail-on
+  2  usage or runtime error, or unreadable manifests with --strict
 
 Environment:
   TYPOSQUAT_NO_MARKETING=1   same as --no-marketing
@@ -205,6 +234,8 @@ Environment:
 `)
 }
 
+// splitArgs lets flags appear after the positional path, which the standard
+// flag package does not support.
 func splitArgs(fs *flag.FlagSet, args []string) (flagArgs, positional []string, err error) {
 	for i := 0; i < len(args); i++ {
 		a := args[i]

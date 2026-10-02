@@ -17,25 +17,46 @@ type Dependency struct {
 	Line    int
 }
 
+// MaxFileSize is the largest manifest the scanner will read.
 const MaxFileSize = 10 << 20
 
-var ErrTooLarge = fmt.Errorf("manifest exceeds %d MiB limit", MaxFileSize>>20)
+var (
+	// ErrTooLarge is returned for manifests over MaxFileSize.
+	ErrTooLarge = fmt.Errorf("manifest exceeds %d MiB limit", MaxFileSize>>20)
+	// ErrNotRegular is returned for symlinks, FIFOs, devices and other
+	// non-regular files.
+	ErrNotRegular = errors.New("not a regular file")
+)
 
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // ReadFile reads a regular file capped at MaxFileSize and strips a UTF-8 BOM.
+//
+// Scanned trees are untrusted input: symlinks are refused so reads cannot
+// escape the tree, and FIFOs/devices are refused so a crafted checkout cannot
+// block the scan forever.
 func ReadFile(path string) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	fi, err := f.Stat()
+	fi, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, errors.New("not a regular file")
+		return nil, ErrNotRegular
+	}
+	if fi.Size() > MaxFileSize {
+		return nil, ErrTooLarge
+	}
+	f, err := openNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(fi, opened) {
+		return nil, ErrNotRegular
 	}
 	data, err := io.ReadAll(io.LimitReader(f, MaxFileSize+1))
 	if err != nil {

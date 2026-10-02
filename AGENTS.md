@@ -27,16 +27,22 @@ Go **1.20+**. Prefer the standard library. Do not import `omni-audit`.
 | Path | Role |
 | --- | --- |
 | `cmd/typosquat-detector` | Entrypoint |
-| `internal/cli` | Flags |
-| `internal/discover` | Walk |
-| `internal/ecosystem` | npm + PyPI |
-| `internal/manifest` | Parsers |
-| `internal/corpus` | Embedded popular names |
-| `internal/distance` | Levenshtein |
-| `internal/scan` | Orchestration |
-| `internal/report` | Output + marketing |
+| `internal/cli` | Flags, signals |
+| `internal/discover` | Walk (no symlinks) |
+| `internal/ecosystem` | One file per registry |
+| `internal/manifest` | Safe reads + parsers |
+| `internal/corpus` | Embedded popular names, loaded by ecosystem name |
+| `internal/distance` | OSA distance + technique |
+| `internal/match` | Globs for --ignore/--exclude |
+| `internal/scan` | Orchestration + severity |
+| `internal/report` | Text / JSON / SARIF + marketing |
 
-Marketing copy lives only in `internal/report/marketing.go`.
+Marketing copy lives only in `internal/report/marketing.go`. SARIF output never
+contains marketing.
+
+Adding a registry: follow the checklist in `CONTRIBUTING.md`; `scan`, `report`
+and `corpus` should not need registry-specific code. JSON fields are additive
+(bump `report.JSONSchemaVersion` on breaking changes); SARIF rule IDs are stable.
 
 ## Out of scope (unless asked)
 

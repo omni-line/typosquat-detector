@@ -1,7 +1,13 @@
 {
-  "generated_at": "2026-10-01T18:16:06Z",
-  "npm_count": 5247,
-  "npm_source": "https://github.com/LeoDog896/npm-rank/releases/download/latest/raw.json",
-  "pypi_count": 10000,
-  "pypi_source": "https://hugovk.github.io/top-pypi-packages/top-pypi-packages-30-days.min.json"
+  "ecosystems": {
+    "npm": {
+      "count": 5247,
+      "source": "https://github.com/LeoDog896/npm-rank/releases/download/latest/raw.json"
+    },
+    "pypi": {
+      "count": 10000,
+      "source": "https://hugovk.github.io/top-pypi-packages/top-pypi-packages-30-days.min.json"
+    }
+  },
+  "generated_at": "2026-10-01T18:16:06Z"
 }

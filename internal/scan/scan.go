@@ -1,61 +1,109 @@
+// Package scan discovers manifests and compares dependency names against
+// popular-package corpora and against namespace peers.
 package scan
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/omni-line/typosquat-detector/internal/corpus"
 	"github.com/omni-line/typosquat-detector/internal/discover"
 	"github.com/omni-line/typosquat-detector/internal/distance"
 	"github.com/omni-line/typosquat-detector/internal/ecosystem"
 	"github.com/omni-line/typosquat-detector/internal/manifest"
-	"github.com/omni-line/typosquat-detector/internal/manifest/npm"
 	"github.com/omni-line/typosquat-detector/internal/match"
 )
 
+// DefaultDistance is the default maximum edit distance flagged.
 const DefaultDistance = 2
 
-// Finding is a suspected typosquat.
+// maxSuggestions caps how many equally-close targets a finding lists.
+const maxSuggestions = 3
+
+// Finding is a suspected typosquat at one manifest location.
 type Finding struct {
-	Ecosystem   string   `json:"ecosystem"`
-	Package     string   `json:"package"`
-	Version     string   `json:"version,omitempty"`
-	Manifest    string   `json:"manifest"`
-	Line        int      `json:"line,omitempty"`
-	Group       string   `json:"group,omitempty"`
-	Distance    int      `json:"distance"`
-	Suggestions []string `json:"suggestions"`
-	Kind        string   `json:"kind"` // popular | scope-peer
-	Severity    string   `json:"severity"`
+	Ecosystem     string             `json:"ecosystem"`
+	Package       string             `json:"package"`
+	Version       string             `json:"version,omitempty"`
+	Manifest      string             `json:"manifest"`
+	Line          int                `json:"line,omitempty"`
+	Group         string             `json:"group,omitempty"`
+	Distance      int                `json:"distance"`
+	Suggestions   []string           `json:"suggestions"`
+	Kind          Kind               `json:"kind"`
+	Severity      Severity           `json:"severity"`
+	Technique     distance.Technique `json:"technique,omitempty"`
+	Message       string             `json:"message,omitempty"`
+	PURL          string             `json:"purl,omitempty"`
+	RegistryURL   string             `json:"registry_url,omitempty"`
+	SuggestionURL string             `json:"suggestion_url,omitempty"`
+}
+
+// Warning is a non-fatal problem that may hide findings, such as a manifest
+// that could not be read or parsed.
+type Warning struct {
+	Manifest string `json:"manifest"`
+	Message  string `json:"message"`
 }
 
 // Stats summarizes a scan.
 type Stats struct {
-	Manifests int `json:"manifests"`
-	Packages  int `json:"packages"`
-	Findings  int `json:"findings"`
-	Skipped   int `json:"skipped"`
+	Manifests  int              `json:"manifests"`
+	Packages   int              `json:"packages"`
+	Findings   int              `json:"findings"`
+	Skipped    int              `json:"skipped"`
+	Warnings   int              `json:"warnings"`
+	BySeverity map[Severity]int `json:"by_severity"`
 }
 
 // Result is the full scan outcome.
 type Result struct {
 	Findings []Finding `json:"findings"`
+	Warnings []Warning `json:"warnings"`
 	Stats    Stats     `json:"stats"`
 }
 
 // Options configures Run.
 type Options struct {
-	Ecosystems   []ecosystem.Ecosystem
-	MaxDistance  int
-	SafeIgnore   *match.Matcher
-	Allow        map[string]struct{}
-	Exclude      *match.Matcher
+	Ecosystems  []ecosystem.Ecosystem
+	MaxDistance int
+	// SafeIgnore skips package names matching these globs.
+	SafeIgnore *match.Matcher
+	// Allow lists exact (or normalized) package names treated as safe.
+	Allow   map[string]struct{}
+	Exclude *match.Matcher
+	// Scopes are namespaces (npm "@org") to peer-check in addition to the
+	// ones discovered automatically.
 	Scopes       []string
 	NoScopePeers bool
 }
 
-// Run discovers manifests and compares dependency names to popular corpora.
-func Run(root string, opts Options) (*Result, error) {
+type decl struct {
+	eco *ecosystem.Ecosystem
+	dep manifest.Dependency
+	key string
+	rel string
+}
+
+type popularHit struct {
+	dist    int
+	targets []string
+}
+
+type scanner struct {
+	opts     Options
+	corpora  map[string]*corpus.Set
+	popular  map[string]popularHit
+	res      *Result
+	reported map[string]int
+}
+
+// Run discovers manifests under root and reports suspected typosquats.
+func Run(ctx context.Context, root string, opts Options) (*Result, error) {
 	if opts.MaxDistance <= 0 {
 		opts.MaxDistance = DefaultDistance
 	}
@@ -65,13 +113,30 @@ func Run(root string, opts Options) (*Result, error) {
 	if err := ecosystem.ValidateAll(opts.Ecosystems); err != nil {
 		return nil, err
 	}
+	root, err := resolveRoot(root)
+	if err != nil {
+		return nil, err
+	}
+
+	s := &scanner{
+		opts:     opts,
+		corpora:  map[string]*corpus.Set{},
+		popular:  map[string]popularHit{},
+		res:      &Result{Findings: []Finding{}, Warnings: []Warning{}},
+		reported: map[string]int{},
+	}
 	byName := map[string]*ecosystem.Ecosystem{}
 	for i := range opts.Ecosystems {
 		e := &opts.Ecosystems[i]
 		byName[e.Name] = e
+		set, err := e.LoadCorpus()
+		if err != nil {
+			return nil, fmt.Errorf("ecosystem %s: %w", e.Name, err)
+		}
+		s.corpora[e.Name] = set
 	}
 
-	manifests, err := discover.Walk(root, discover.Options{
+	manifests, err := discover.Walk(ctx, root, discover.Options{
 		Exclude: opts.Exclude,
 		Classify: func(rel string) string {
 			for _, e := range opts.Ecosystems {
@@ -81,232 +146,339 @@ func Run(root string, opts Options) (*Result, error) {
 			}
 			return ""
 		},
+		Warn: func(rel string, err error) { s.warn(rel, err) },
 	})
 	if err != nil {
 		return nil, err
 	}
+	s.res.Stats.Manifests = len(manifests)
 
-	type decl struct {
-		eco  *ecosystem.Ecosystem
-		dep  manifest.Dependency
-		path string
-		rel  string
-	}
 	var decls []decl
-	autoScopes := map[string]struct{}{}
-
 	for _, m := range manifests {
-		eco := byName[m.Ecosystem]
-		if eco == nil {
-			continue
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
+		eco := byName[m.Ecosystem]
 		data, err := manifest.ReadFile(m.Path)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", m.Path, err)
+			s.warn(m.Rel, err)
+			continue
 		}
 		deps, err := eco.Parse(m.Rel, data)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", m.Path, err)
+			s.warn(m.Rel, err)
+			continue
 		}
 		for _, d := range deps {
-			decls = append(decls, decl{eco: eco, dep: d, path: m.Path, rel: m.Rel})
-			if eco.Name == "npm" {
-				if s := npm.Scope(d.Name); s != "" {
-					autoScopes[s] = struct{}{}
-				}
+			s.res.Stats.Packages++
+			key := eco.Key(d.Name)
+			if s.allowed(d.Name, key) {
+				s.res.Stats.Skipped++
+				continue
 			}
+			decls = append(decls, decl{eco: eco, dep: d, key: key, rel: m.Rel})
 		}
-	}
-
-	res := &Result{Stats: Stats{Manifests: len(manifests), Packages: len(decls)}}
-	seenFinding := map[string]struct{}{}
-
-	add := func(f Finding) {
-		key := f.Ecosystem + "|" + f.Package + "|" + f.Kind + "|" + strings.Join(f.Suggestions, ",")
-		if _, ok := seenFinding[key]; ok {
-			return
-		}
-		seenFinding[key] = struct{}{}
-		res.Findings = append(res.Findings, f)
 	}
 
 	for _, d := range decls {
-		name := d.dep.Name
-		key := d.eco.Key(name)
-		if opts.SafeIgnore != nil && opts.SafeIgnore.Match(name) {
-			res.Stats.Skipped++
+		s.checkPopular(d)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.checkPeers(decls)
+
+	s.finish()
+	return s.res, nil
+}
+
+func resolveRoot(root string) (string, error) {
+	fi, err := os.Lstat(root)
+	if err != nil {
+		return "", err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return filepath.EvalSymlinks(root)
+	}
+	return root, nil
+}
+
+func (s *scanner) warn(rel string, err error) {
+	s.res.Warnings = append(s.res.Warnings, Warning{Manifest: rel, Message: err.Error()})
+}
+
+func (s *scanner) allowed(name, key string) bool {
+	if s.opts.SafeIgnore.Match(name) || s.opts.SafeIgnore.Match(key) {
+		return true
+	}
+	if _, ok := s.opts.Allow[name]; ok {
+		return true
+	}
+	_, ok := s.opts.Allow[key]
+	return ok
+}
+
+func (s *scanner) checkPopular(d decl) {
+	set := s.corpora[d.eco.Name]
+	if set.Contains(d.key) || (d.eco.Implied != nil && d.eco.Implied(d.key, set.Contains)) {
+		return
+	}
+	memo := d.eco.Name + "\x00" + d.key
+	hit, ok := s.popular[memo]
+	if !ok {
+		hit = nearest(set, d.key, s.opts.MaxDistance)
+		s.popular[memo] = hit
+	}
+	if len(hit.targets) == 0 {
+		return
+	}
+	display := make([]string, len(hit.targets))
+	for i, t := range hit.targets {
+		display[i] = set.Display(t)
+	}
+	s.add(d, KindPopular, hit.dist, distance.Classify(d.key, hit.targets[0]), display)
+}
+
+// nearest returns the closest corpus keys to key within maxDist.
+func nearest(set *corpus.Set, key string, maxDist int) popularHit {
+	best := popularHit{dist: maxDist + 1}
+	seen := map[string]struct{}{}
+	set.Candidates(key, maxDist, func(c string) {
+		if _, dup := seen[c]; dup {
+			return
+		}
+		seen[c] = struct{}{}
+		limit := budget(key, c, maxDist)
+		if limit == 0 {
+			return
+		}
+		d, ok := distance.Within(key, c, limit)
+		if !ok || d == 0 {
+			return
+		}
+		if d < best.dist {
+			best.dist = d
+			best.targets = best.targets[:0]
+		}
+		if d == best.dist {
+			best.targets = append(best.targets, c)
+		}
+	})
+	sort.Strings(best.targets)
+	if len(best.targets) > maxSuggestions {
+		best.targets = best.targets[:maxSuggestions]
+	}
+	return best
+}
+
+// budget caps the distance considered for short names: two edits can turn
+// almost any 3–4 letter name into another real package, which would drown
+// real findings in noise.
+func budget(a, b string, maxDist int) int {
+	n := len(distance.StripSeparators(a))
+	if m := len(distance.StripSeparators(b)); m < n {
+		n = m
+	}
+	switch {
+	case n < 3:
+		return 0
+	case n < 5 && maxDist > 1:
+		return 1
+	default:
+		return maxDist
+	}
+}
+
+type peerHit struct {
+	dist  int
+	goods []string
+}
+
+// checkPeers flags packages in the same namespace that are near-misses of
+// each other (e.g. @acme/authh next to @acme/auth).
+func (s *scanner) checkPeers(decls []decl) {
+	wanted := map[string]struct{}{}
+	for _, sc := range s.opts.Scopes {
+		if sc = strings.TrimSpace(sc); sc != "" {
+			wanted[strings.ToLower(sc)] = struct{}{}
+		}
+	}
+	type group struct {
+		eco   *ecosystem.Ecosystem
+		names map[string][]decl
+	}
+	groups := map[string]*group{}
+	for _, d := range decls {
+		if d.eco.Namespace == nil {
 			continue
 		}
-		if _, ok := opts.Allow[name]; ok {
-			res.Stats.Skipped++
+		ns, _ := d.eco.Namespace(d.key)
+		if ns == "" {
 			continue
 		}
-		if _, ok := opts.Allow[key]; ok {
-			res.Stats.Skipped++
+		if _, ok := wanted[ns]; !ok && s.opts.NoScopePeers {
 			continue
 		}
-		set := d.eco.Corpus()
-		if set.Contains(key) || set.Contains(name) {
-			continue
+		gk := d.eco.Name + "\x00" + ns
+		g := groups[gk]
+		if g == nil {
+			g = &group{eco: d.eco, names: map[string][]decl{}}
+			groups[gk] = g
 		}
-		suggestions := nearest(set, name, key, opts.MaxDistance)
-		if len(suggestions) == 0 {
-			continue
-		}
-		dist := distance.Distance(name, suggestions[0])
-		if dist == 0 {
-			dist = distance.Distance(key, suggestions[0])
-		}
-		add(Finding{
-			Ecosystem:   d.eco.Name,
-			Package:     name,
-			Version:     d.dep.Version,
-			Manifest:    d.rel,
-			Line:        d.dep.Line,
-			Group:       d.dep.Group,
-			Distance:    dist,
-			Suggestions: suggestions,
-			Kind:        "popular",
-			Severity:    "critical",
-		})
+		g.names[d.key] = append(g.names[d.key], d)
 	}
 
-	// Scope peer checks.
-	scopes := map[string]struct{}{}
-	for _, s := range opts.Scopes {
-		s = strings.TrimSpace(s)
-		if s != "" {
-			scopes[s] = struct{}{}
+	for _, g := range groups {
+		names := make([]string, 0, len(g.names))
+		for n := range g.names {
+			names = append(names, n)
 		}
-	}
-	if !opts.NoScopePeers {
-		for s := range autoScopes {
-			scopes[s] = struct{}{}
-		}
-	}
-	if len(scopes) > 0 {
-		byScope := map[string][]decl{}
-		for _, d := range decls {
-			if d.eco.Name != "npm" {
-				continue
-			}
-			s := npm.Scope(d.dep.Name)
-			if _, ok := scopes[s]; !ok {
-				continue
-			}
-			byScope[s] = append(byScope[s], d)
-		}
-		for _, peers := range byScope {
-			for i := 0; i < len(peers); i++ {
-				for j := i + 1; j < len(peers); j++ {
-					a, b := peers[i], peers[j]
-					if a.dep.Name == b.dep.Name {
-						continue
-					}
-					aLeaf := scopeLeaf(a.dep.Name)
-					bLeaf := scopeLeaf(b.dep.Name)
-					dist := distance.Distance(aLeaf, bLeaf)
-					if dist < 1 || dist > opts.MaxDistance {
-						continue
-					}
-					// Prefer flagging the longer leaf (likely typo) against the shorter.
-					typo, good := a, b
-					if len(bLeaf) > len(aLeaf) || (len(aLeaf) == len(bLeaf) && b.dep.Name > a.dep.Name) {
-						typo, good = b, a
-					}
-					add(Finding{
-						Ecosystem:   "npm",
-						Package:     typo.dep.Name,
-						Version:     typo.dep.Version,
-						Manifest:    typo.rel,
-						Line:        typo.dep.Line,
-						Group:       typo.dep.Group,
-						Distance:    dist,
-						Suggestions: []string{good.dep.Name},
-						Kind:        "scope-peer",
-						Severity:    "critical",
-					})
+		sort.Strings(names)
+		set := s.corpora[g.eco.Name]
+		hits := map[string]*peerHit{}
+		for i := 0; i < len(names); i++ {
+			for j := i + 1; j < len(names); j++ {
+				a, b := names[i], names[j]
+				_, aLeaf := g.eco.Namespace(a)
+				_, bLeaf := g.eco.Namespace(b)
+				if isSiblingFamily(aLeaf, bLeaf) {
+					continue
+				}
+				limit := budget(aLeaf, bLeaf, s.opts.MaxDistance)
+				if limit == 0 {
+					continue
+				}
+				d, ok := distance.Within(aLeaf, bLeaf, limit)
+				if !ok || d == 0 {
+					continue
+				}
+				typo, good := pickTypo(a, aLeaf, b, bLeaf, set)
+				h := hits[typo]
+				if h == nil || d < h.dist {
+					h = &peerHit{dist: d}
+					hits[typo] = h
+				}
+				if d == h.dist && len(h.goods) < maxSuggestions {
+					h.goods = append(h.goods, good)
 				}
 			}
 		}
-	}
-
-	sort.Slice(res.Findings, func(i, j int) bool {
-		if res.Findings[i].Ecosystem != res.Findings[j].Ecosystem {
-			return res.Findings[i].Ecosystem < res.Findings[j].Ecosystem
+		for typo, h := range hits {
+			_, tLeaf := g.eco.Namespace(typo)
+			_, gLeaf := g.eco.Namespace(h.goods[0])
+			tech := distance.Classify(tLeaf, gLeaf)
+			for _, d := range g.names[typo] {
+				s.add(d, KindScopePeer, h.dist, tech, h.goods)
+			}
 		}
-		return res.Findings[i].Package < res.Findings[j].Package
-	})
-	res.Stats.Findings = len(res.Findings)
-	return res, nil
+	}
 }
 
-func nearest(set interface {
-	Candidates(name string, maxDist int) []string
-}, name, key string, maxDist int) []string {
-	type hit struct {
-		name string
-		dist int
+// isSiblingFamily reports whether one leaf extends the other by a whole
+// separator-delimited segment (swagger / swagger-ui, ui / ui-kit). That is how
+// organizations name related packages, not how typos look.
+func isSiblingFamily(a, b string) bool {
+	if len(a) > len(b) {
+		a, b = b, a
 	}
-	var hits []hit
-	seen := map[string]struct{}{}
-	consider := func(cand string) {
-		if _, ok := seen[cand]; ok {
-			return
-		}
-		d1 := distance.Distance(name, cand)
-		d2 := distance.Distance(key, cand)
-		d := d1
-		if d2 < d {
-			d = d2
-		}
-		if d < 1 || d > maxDist {
-			return
-		}
-		seen[cand] = struct{}{}
-		hits = append(hits, hit{name: cand, dist: d})
+	if a == "" || len(b) < len(a)+2 {
+		return false
 	}
-	for _, c := range set.Candidates(name, maxDist) {
-		consider(c)
-	}
-	if key != name {
-		for _, c := range set.Candidates(key, maxDist) {
-			consider(c)
-		}
-	}
-	// Also try separator-stripped length buckets via candidates of stripped form.
-	stripped := distance.StripSeparators(name)
-	if stripped != name {
-		for _, c := range set.Candidates(stripped, maxDist+2) {
-			consider(c)
-		}
-	}
-	if len(hits) == 0 {
-		return nil
-	}
-	sort.Slice(hits, func(i, j int) bool {
-		if hits[i].dist != hits[j].dist {
-			return hits[i].dist < hits[j].dist
-		}
-		return hits[i].name < hits[j].name
-	})
-	best := hits[0].dist
-	var out []string
-	for _, h := range hits {
-		if h.dist != best {
-			break
-		}
-		out = append(out, h.name)
-		if len(out) >= 3 {
-			break
-		}
-	}
-	return out
+	isSep := func(c byte) bool { return c == '-' || c == '_' || c == '.' }
+	return (strings.HasPrefix(b, a) && isSep(b[len(a)])) ||
+		(strings.HasSuffix(b, a) && isSep(b[len(b)-len(a)-1]))
 }
 
-func scopeLeaf(name string) string {
-	if i := strings.LastIndex(name, "/"); i >= 0 && i+1 < len(name) {
-		return name[i+1:]
+// pickTypo decides which of two near-identical peers is the likely mistake:
+// a name in the popular corpus wins, then the shorter leaf, then lexical order.
+func pickTypo(a, aLeaf, b, bLeaf string, set *corpus.Set) (typo, good string) {
+	aPop, bPop := set.Contains(a), set.Contains(b)
+	switch {
+	case aPop && !bPop:
+		return b, a
+	case bPop && !aPop:
+		return a, b
+	case len(aLeaf) != len(bLeaf):
+		if len(aLeaf) > len(bLeaf) {
+			return a, b
+		}
+		return b, a
+	case a > b:
+		return a, b
+	default:
+		return b, a
 	}
-	return name
+}
+
+func (s *scanner) add(d decl, kind Kind, dist int, tech distance.Technique, targets []string) {
+	key := strings.Join([]string{d.eco.Name, d.rel, d.key, string(kind)}, "\x00")
+	if _, dup := s.reported[key]; dup {
+		return
+	}
+	s.reported[key] = len(s.res.Findings)
+	f := Finding{
+		Ecosystem:   d.eco.Name,
+		Package:     d.dep.Name,
+		Version:     d.dep.Version,
+		Manifest:    d.rel,
+		Line:        d.dep.Line,
+		Group:       d.dep.Group,
+		Distance:    dist,
+		Suggestions: targets,
+		Kind:        kind,
+		Severity:    severityFor(kind, dist),
+		Technique:   tech,
+		PURL:        d.eco.PackageID(d.dep.Name),
+		RegistryURL: d.eco.URL(d.dep.Name),
+	}
+	if len(targets) > 0 {
+		f.SuggestionURL = d.eco.URL(targets[0])
+	}
+	f.Message = message(f)
+	s.res.Findings = append(s.res.Findings, f)
+}
+
+func message(f Finding) string {
+	what := "a popular " + f.Ecosystem + " package"
+	if f.Kind == KindScopePeer {
+		what = "a package in the same namespace"
+	}
+	edits := "edit"
+	if f.Distance != 1 {
+		edits = "edits"
+	}
+	msg := fmt.Sprintf("%q is %d %s away from %s, %q", f.Package, f.Distance, edits, what, f.Suggestions[0])
+	if f.Technique != "" {
+		msg += " (" + f.Technique.Describe() + ")"
+	}
+	return msg
+}
+
+func (s *scanner) finish() {
+	r := s.res
+	sort.SliceStable(r.Findings, func(i, j int) bool {
+		a, b := r.Findings[i], r.Findings[j]
+		if a.Severity.Rank() != b.Severity.Rank() {
+			return a.Severity.Rank() > b.Severity.Rank()
+		}
+		if a.Ecosystem != b.Ecosystem {
+			return a.Ecosystem < b.Ecosystem
+		}
+		if a.Manifest != b.Manifest {
+			return a.Manifest < b.Manifest
+		}
+		if a.Line != b.Line {
+			return a.Line < b.Line
+		}
+		return a.Package < b.Package
+	})
+	r.Stats.Findings = len(r.Findings)
+	r.Stats.Warnings = len(r.Warnings)
+	r.Stats.BySeverity = map[Severity]int{}
+	for _, sev := range Severities {
+		r.Stats.BySeverity[sev] = 0
+	}
+	for _, f := range r.Findings {
+		r.Stats.BySeverity[f.Severity]++
+	}
 }
