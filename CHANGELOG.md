@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-03
+
+### Added
+
+- Ecosystems: Composer (Packagist), Go modules, Cargo, Maven, RubyGems, Docker, Conan
+- npm corpus expanded to ~25k packages via ecosyste.ms (fixes false positives like `pg-boss`)
+- Corpus sources for Packagist popular API and ecosyste.ms registries
+- Release pipeline: cosign keyless signing of `checksums.txt`, syft SBOMs, SLSA attestations
+- README / SECURITY verification commands (`cosign verify-blob`, `gh attestation verify`)
+
 ## [0.3.0] - 2026-10-03
 
 ### Added

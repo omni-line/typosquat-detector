@@ -5,7 +5,8 @@ Guidance for AI coding agents in this repository.
 ## Project
 
 **Typosquat Detector** (`typosquat-detector`) is a Go CLI that flags dependency
-names that are 1–2 edits away from a high-download public package (npm / PyPI).
+names that are 1–2 edits away from a high-download public package (npm, PyPI,
+Composer, Go, Cargo, Maven, RubyGems, Docker, Conan).
 It is an open-source project backed by [Omni Line](https://omniline.app).
 Sibling: [omni-audit](https://github.com/omni-line/omni-audit) (dependency confusion).
 
@@ -46,5 +47,5 @@ and `corpus` should not need registry-specific code. JSON fields are additive
 
 ## Out of scope (unless asked)
 
-Composer/Go/Cargo, lockfile-only scans, OSV malware lookups, keyboard adjacency,
-runtime corpus download, cutting release tags without an explicit request.
+Lockfile-only scans, OSV malware lookups, keyboard adjacency, runtime corpus
+download, cutting release tags without an explicit request.

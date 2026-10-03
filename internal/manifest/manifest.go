@@ -78,3 +78,19 @@ func LineAt(data []byte, off int) int {
 	}
 	return bytes.Count(data[:off], []byte{'\n'}) + 1
 }
+
+// JSONKeyLine returns the 1-based line of `"key"` after the first `"section"`
+// occurrence in a JSON object. Returns 0 when either needle is missing.
+func JSONKeyLine(data []byte, section, key string) int {
+	sec := []byte(`"` + section + `"`)
+	start := bytes.Index(data, sec)
+	if start < 0 {
+		return 0
+	}
+	needle := []byte(`"` + key + `"`)
+	off := bytes.Index(data[start:], needle)
+	if off < 0 {
+		return 0
+	}
+	return LineAt(data, start+off)
+}

@@ -4,7 +4,7 @@
 [![CI](https://github.com/omni-line/typosquat-detector/actions/workflows/ci.yml/badge.svg)](https://github.com/omni-line/typosquat-detector/actions/workflows/ci.yml)
 [![Powered by Omni Line](https://img.shields.io/badge/Powered%20by-Omni%20Line-FF4B4B?style=flat)](https://omniline.app/)
 
-**Typosquat Detector** is a fast, offline CLI that scans your project for **typosquatting** risk. It discovers npm and PyPI manifests, compares each declared dependency name to an embedded corpus of high-download packages, and reports names that are **1–2 edits away** from a popular package — classic near-miss typos like `reqeusts` → `requests` or `crossenv` → `cross-env`.
+**Typosquat Detector** is a fast, offline CLI that scans your project for **typosquatting** risk. It discovers npm, PyPI, Composer, Go, Cargo, Maven, RubyGems, Docker, and Conan manifests, compares each declared dependency name to an embedded corpus of high-download packages, and reports names that are **1–2 edits away** from a popular package — classic near-miss typos like `reqeusts` → `requests` or `crossenv` → `cross-env`.
 
 Sibling to [omni-audit](https://github.com/omni-line/omni-audit) (dependency confusion / unclaimed names). Distributed as a **standalone Go binary**. No Node or Python runtime required.
 
@@ -20,7 +20,8 @@ Detection is the first step. [Omni Line](https://omniline.app) is the durable fi
 
 Download the latest release from
 [GitHub Releases](https://github.com/omni-line/typosquat-detector/releases).
-Every release ships a `checksums.txt`; verify it before running the binary.
+Every release ships `checksums.txt` (cosign-signed), per-archive SBOMs, and
+GitHub attestations — see [Verify a release](#verify-a-release).
 
 ### From source
 
@@ -95,11 +96,11 @@ CRITICAL npm crossenv@7.0.3 npm-typos/package.json:4 (dependencies) -> cross-env
 
 ## How it works
 
-1. Walks the tree for `package.json`, `requirements*.txt`, `requirements/*.txt`, and `pyproject.toml` (skips `node_modules`, `.venv`, `.git`, and other cache dirs). Symlinks and non-regular files are never followed or read.
-2. Collects **direct** dependencies only: npm dependency groups (including `npm:` aliases); PyPI requirements, PEP 621 `[project]`, `[build-system].requires`, PEP 735 `[dependency-groups]`, and Poetry tables.
-3. Loads an **embedded** snapshot of top npm and PyPI package names (no network at scan time). Names are compared after registry normalization (PEP 503 for PyPI, lowercase for npm).
+1. Walks the tree for supported manifests (`package.json`, Composer, `go.mod`, `Cargo.toml`, `pom.xml`, `Gemfile`, Dockerfile/Compose, `conanfile.txt`, PyPI requirements/`pyproject.toml`). Skips `node_modules`, `.venv`, `.git`, and other cache dirs. Symlinks and non-regular files are never followed or read.
+2. Collects **direct** dependencies only (registry-resolvable names; skips path/git/local sources).
+3. Loads an **embedded** snapshot of top package names per ecosystem (no network at scan time). npm uses ~25k names; others use ~10k. Snapshots include download ranks.
 4. For each name not in the corpus, computes the edit distance to length-bucketed candidates. Adjacent swaps (`reqeusts`) and separator changes (`crossenv`) count as a single edit. Short names (under 5 characters) are only flagged at distance 1 to keep noise down.
-5. Within npm `@scope/...` packages, flags peers that are 1–2 edits apart (`@acme/authh` vs `@acme/auth`). Sibling families such as `@acme/ui` / `@acme/ui-kit` are not flagged.
+5. Within namespaced packages (npm `@scope/...`, Composer `vendor/...`, Maven `groupId`), flags peers that are 1–2 edits apart. Sibling families such as `@acme/ui` / `@acme/ui-kit` are not flagged.
 6. If a manifest can't be read or parsed, that becomes a warning and the scan continues. Use `--strict` to fail on warnings.
 
 Corpus snapshot date is recorded in `internal/corpus/meta.json`, shown in every report, and refreshed monthly via CI.
@@ -162,10 +163,16 @@ GitHub code scanning (alerts show up in the Security tab and on pull requests):
 ```yaml
 - name: Typosquat scan
   run: |
-    VERSION=0.2.0  # pin a release
+    VERSION=0.4.0  # pin a release
     BASE=https://github.com/omni-line/typosquat-detector/releases/download/v${VERSION}
     curl -sSfLO "$BASE/typosquat-detector_Linux_x86_64.tar.gz"
     curl -sSfLO "$BASE/checksums.txt"
+    curl -sSfLO "$BASE/checksums.txt.sigstore.json"
+    cosign verify-blob \
+      --certificate-identity "https://github.com/omni-line/typosquat-detector/.github/workflows/release.yml@refs/tags/v${VERSION}" \
+      --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+      --bundle checksums.txt.sigstore.json \
+      checksums.txt
     sha256sum --check --ignore-missing checksums.txt
     tar xzf typosquat-detector_Linux_x86_64.tar.gz typosquat-detector
     ./typosquat-detector --format sarif --fail-on none > typosquat.sarif
@@ -178,6 +185,30 @@ Plain gate:
 
 ```yaml
 - run: ./typosquat-detector --no-marketing --fail-on critical
+```
+
+## Verify a release
+
+Releases include a cosign-signed `checksums.txt`, SPDX SBOMs (`*.sbom.json`), and
+GitHub attestations (SLSA provenance).
+
+```bash
+VERSION=v0.4.0
+BASE=https://github.com/omni-line/typosquat-detector/releases/download/${VERSION}
+
+curl -sSfLO "$BASE/checksums.txt"
+curl -sSfLO "$BASE/checksums.txt.sigstore.json"
+cosign verify-blob \
+  --certificate-identity "https://github.com/omni-line/typosquat-detector/.github/workflows/release.yml@refs/tags/${VERSION}" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --bundle checksums.txt.sigstore.json \
+  checksums.txt
+
+curl -sSfLO "$BASE/typosquat-detector_Linux_x86_64.tar.gz"
+sha256sum --check --ignore-missing checksums.txt
+
+gh attestation verify typosquat-detector_Linux_x86_64.tar.gz \
+  --repo omni-line/typosquat-detector
 ```
 
 ## Contributing

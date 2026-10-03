@@ -33,6 +33,13 @@ fuzz:
 	go test ./internal/manifest/npm -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 	go test ./internal/manifest/pypi -run='^$$' -fuzz=FuzzParseRequirements -fuzztime=$(FUZZTIME)
 	go test ./internal/manifest/pypi -run='^$$' -fuzz=FuzzParsePyProject -fuzztime=$(FUZZTIME)
+	go test ./internal/manifest/composer -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
+	go test ./internal/manifest/gomod -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
+	go test ./internal/manifest/cargo -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
+	go test ./internal/manifest/maven -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
+	go test ./internal/manifest/rubygems -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
+	go test ./internal/manifest/docker -run='^$$' -fuzz=FuzzParseDockerfile -fuzztime=$(FUZZTIME)
+	go test ./internal/manifest/conan -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME)
 
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...

@@ -99,7 +99,9 @@ func (e Ecosystem) PackageID(name string) string {
 
 // Default returns all built-in ecosystems.
 func Default() []Ecosystem {
-	return []Ecosystem{NPM(), PyPI()}
+	return []Ecosystem{
+		NPM(), PyPI(), Composer(), GoMod(), Cargo(), Maven(), RubyGems(), Docker(), Conan(),
+	}
 }
 
 // ValidateAll checks ecosystems and rejects duplicate names.

@@ -55,10 +55,17 @@ func TestClassicTypos(t *testing.T) {
 		sev  scan.Severity
 		kind scan.Kind
 	}{
-		"crossenv":    {"cross-env", scan.SeverityCritical, scan.KindPopular},
-		"react-domm":  {"react-dom", scan.SeverityCritical, scan.KindPopular},
-		"reqeusts":    {"requests", scan.SeverityCritical, scan.KindPopular},
-		"@acme/authh": {"@acme/auth", scan.SeverityHigh, scan.KindScopePeer},
+		"crossenv":                          {"cross-env", scan.SeverityCritical, scan.KindPopular},
+		"react-domm":                        {"react-dom", scan.SeverityCritical, scan.KindPopular},
+		"reqeusts":                          {"requests", scan.SeverityCritical, scan.KindPopular},
+		"@acme/authh":                       {"@acme/auth", scan.SeverityHigh, scan.KindScopePeer},
+		"monologg/monolog":                  {"monolog/monolog", scan.SeverityCritical, scan.KindPopular},
+		"github.com/gin-gonic/ginn":         {"github.com/gin-gonic/gin", scan.SeverityCritical, scan.KindPopular},
+		"serdee":                            {"serde", scan.SeverityCritical, scan.KindPopular},
+		"org.apache.commons:commons-langg3": {"org.apache.commons:commons-lang3", scan.SeverityCritical, scan.KindPopular},
+		"railss":                            {"rails", scan.SeverityCritical, scan.KindPopular},
+		"nginxg":                            {"nginx", scan.SeverityCritical, scan.KindPopular},
+		"openssll":                          {"openssl", scan.SeverityCritical, scan.KindPopular},
 	}
 	for pkg, w := range want {
 		f, ok := got[pkg]
@@ -76,12 +83,12 @@ func TestClassicTypos(t *testing.T) {
 			t.Errorf("%s: missing detail: %+v", pkg, f)
 		}
 	}
-	for _, exact := range []string{"lodash", "requests", "@acme/auth", "urllib3"} {
+	for _, exact := range []string{"lodash", "requests", "@acme/auth", "urllib3", "monolog/monolog", "serde", "rails", "nginx", "openssl"} {
 		if _, ok := got[exact]; ok {
 			t.Errorf("exact package %q should not be a finding", exact)
 		}
 	}
-	if res.Stats.BySeverity[scan.SeverityCritical] < 3 {
+	if res.Stats.BySeverity[scan.SeverityCritical] < 10 {
 		t.Errorf("by_severity=%v", res.Stats.BySeverity)
 	}
 	if got["crossenv"].PURL != "pkg:npm/crossenv" || got["crossenv"].SuggestionURL != "https://www.npmjs.com/package/cross-env" {

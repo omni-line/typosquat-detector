@@ -90,10 +90,13 @@ rank), sorted alphabetically so monthly refresh diffs stay reviewable.
 make corpus   # regenerates from public sources (needs network)
 ```
 
-Sources:
+Sources (see `scripts/update-corpus/main.go`):
 
+- **npm (~25k):** [ecosyste.ms](https://packages.ecosyste.ms/) downloads sort (npm-rank fallback)
 - **PyPI:** https://hugovk.github.io/top-pypi-packages/top-pypi-packages-30-days.min.json
-- **npm:** [npm-rank `raw.json`](https://github.com/LeoDog896/npm-rank/releases/download/latest/raw.json) (fallback curated seed if fetch fails)
+- **Composer:** https://packagist.org/explore/popular.json
+- **Go / Cargo / Maven / RubyGems / Docker:** ecosyste.ms registry listings
+- **Conan:** curated ConanCenter seed (no public top-N dump)
 
 The script refuses suspiciously small responses so a broken upstream can't
 silently shrink the corpus. Do not hand-edit the gzip files; regenerate them
