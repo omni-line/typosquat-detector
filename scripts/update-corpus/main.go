@@ -3,6 +3,10 @@
 // Each ecosystem is one entry in sources. Adding a registry means adding a
 // source with a fetch function; the output file name (<name>.json.gz) must
 // match ecosystem.Ecosystem.Name.
+//
+// Snapshots are written as [{"name","rank"}, ...] sorted alphabetically by
+// name so monthly refresh diffs stay reviewable. Rank is the 1-based position
+// in the upstream download ordering (preserved before the alphabetical sort).
 package main
 
 import (
@@ -28,6 +32,7 @@ const (
 	limit        = 10000
 	maxBodyBytes = 256 << 20
 	userAgent    = "typosquat-detector-update-corpus (+https://github.com/omni-line/typosquat-detector)"
+	orderedBy    = "downloads"
 )
 
 // minNames guards against committing a truncated or empty upstream response.
@@ -46,9 +51,15 @@ var sources = []source{
 	{name: "pypi", url: pypiURL, fetch: fetchPyPI},
 }
 
+type entry struct {
+	Name string `json:"name"`
+	Rank int    `json:"rank"`
+}
+
 type ecoMeta struct {
-	Count  int    `json:"count"`
-	Source string `json:"source"`
+	Count     int    `json:"count"`
+	Source    string `json:"source"`
+	OrderedBy string `json:"ordered_by"`
 }
 
 type meta struct {
@@ -88,11 +99,11 @@ func run(ctx context.Context, outDir string) error {
 			names = src.fallback()
 			origin = "seeded top " + src.name + " packages (scripts/update-corpus fallback)"
 		}
-		sort.Strings(names)
-		if err := writeGzipJSON(filepath.Join(outDir, src.name+".json.gz"), names); err != nil {
+		entries := rankedEntries(names)
+		if err := writeGzipJSON(filepath.Join(outDir, src.name+".json.gz"), entries); err != nil {
 			return err
 		}
-		m.Ecosystems[src.name] = ecoMeta{Count: len(names), Source: origin}
+		m.Ecosystems[src.name] = ecoMeta{Count: len(entries), Source: origin, OrderedBy: orderedBy}
 	}
 	raw, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -193,8 +204,24 @@ func appendUnique(names []string, extra ...string) []string {
 	return names
 }
 
-func writeGzipJSON(path string, names []string) error {
-	raw, err := json.Marshal(names)
+// rankedEntries assigns 1-based ranks from popularity order, then sorts by
+// name so the written snapshot has stable, reviewable diffs.
+func rankedEntries(names []string) []entry {
+	entries := make([]entry, 0, len(names))
+	for i, n := range names {
+		if n == "" {
+			continue
+		}
+		entries = append(entries, entry{Name: n, Rank: i + 1})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name < entries[j].Name
+	})
+	return entries
+}
+
+func writeGzipJSON(path string, entries []entry) error {
+	raw, err := json.Marshal(entries)
 	if err != nil {
 		return err
 	}

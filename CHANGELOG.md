@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-03
+
+### Added
+
+- Corpus snapshots store a 1-based download `rank` per package (`ordered_by: downloads` in `meta.json`)
+- Findings expose `target_rank` for the primary suggestion (text, JSON, SARIF); omitted when the corpus has no ranks
+- Text output annotates suggestions as `cross-env (#625 on npm)`
+
+### Changed
+
+- Suggestion ties break by ascending download rank, then name
+- Corpus files are `[{name, rank}, ...]` sorted alphabetically for reviewable monthly diffs (legacy name-only arrays still load)
+
 ## [0.2.0] - 2026-10-02
 
 ### Added

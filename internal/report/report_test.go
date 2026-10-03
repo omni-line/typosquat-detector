@@ -21,6 +21,7 @@ func sample() *scan.Result {
 			Group:         "requirements",
 			Distance:      1,
 			Suggestions:   []string{"requests"},
+			TargetRank:    12,
 			Kind:          scan.KindPopular,
 			Severity:      scan.SeverityCritical,
 			Technique:     "transposition",
@@ -50,7 +51,7 @@ func TestWriteText(t *testing.T) {
 	got := out.String()
 	for _, needle := range []string{
 		"1 typosquat finding:", "1 critical", "CRITICAL", "reqeusts@2.1.0",
-		"requirements.txt:12 (requirements)", "did you mean", "requests",
+		"requirements.txt:12 (requirements)", "did you mean", "requests (#12 on pypi)",
 		"two adjacent characters swapped", "https://pypi.org/project/requests/",
 		"--allow reqeusts", "bad/package.json: parse error", "1 warning",
 	} {
@@ -105,7 +106,7 @@ func TestWriteJSON(t *testing.T) {
 	if doc.SchemaVersion != report.JSONSchemaVersion || doc.Scan == nil || doc.Scan.MaxDistance != 2 {
 		t.Fatalf("doc=%+v", doc)
 	}
-	if len(doc.Findings) != 1 || doc.Findings[0].PURL == "" || len(doc.Warnings) != 1 {
+	if len(doc.Findings) != 1 || doc.Findings[0].PURL == "" || doc.Findings[0].TargetRank != 12 || len(doc.Warnings) != 1 {
 		t.Fatalf("findings/warnings: %+v", doc)
 	}
 	if doc.Sponsor == nil || doc.Sponsor.URL == "" {
@@ -149,6 +150,7 @@ func TestWriteSARIF(t *testing.T) {
 					} `json:"physicalLocation"`
 				} `json:"locations"`
 				PartialFingerprints map[string]string `json:"partialFingerprints"`
+				Properties          map[string]any    `json:"properties"`
 			} `json:"results"`
 		} `json:"runs"`
 	}
@@ -173,6 +175,9 @@ func TestWriteSARIF(t *testing.T) {
 	}
 	if len(r.PartialFingerprints) != 1 {
 		t.Fatal("missing fingerprint")
+	}
+	if rank, _ := r.Properties["target_rank"].(float64); rank != 12 {
+		t.Fatalf("sarif target_rank=%v want 12", r.Properties["target_rank"])
 	}
 	if strings.Contains(out.String(), "omniline.app") {
 		t.Fatal("SARIF output must not contain marketing")

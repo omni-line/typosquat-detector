@@ -26,14 +26,17 @@ const maxSuggestions = 3
 
 // Finding is a suspected typosquat at one manifest location.
 type Finding struct {
-	Ecosystem     string             `json:"ecosystem"`
-	Package       string             `json:"package"`
-	Version       string             `json:"version,omitempty"`
-	Manifest      string             `json:"manifest"`
-	Line          int                `json:"line,omitempty"`
-	Group         string             `json:"group,omitempty"`
-	Distance      int                `json:"distance"`
-	Suggestions   []string           `json:"suggestions"`
+	Ecosystem   string   `json:"ecosystem"`
+	Package     string   `json:"package"`
+	Version     string   `json:"version,omitempty"`
+	Manifest    string   `json:"manifest"`
+	Line        int      `json:"line,omitempty"`
+	Group       string   `json:"group,omitempty"`
+	Distance    int      `json:"distance"`
+	Suggestions []string `json:"suggestions"`
+	// TargetRank is the 1-based download rank of Suggestions[0] when the
+	// corpus is rank-ordered; omitted when unavailable.
+	TargetRank    int                `json:"target_rank,omitempty"`
 	Kind          Kind               `json:"kind"`
 	Severity      Severity           `json:"severity"`
 	Technique     distance.Technique `json:"technique,omitempty"`
@@ -236,7 +239,11 @@ func (s *scanner) checkPopular(d decl) {
 	for i, t := range hit.targets {
 		display[i] = set.Display(t)
 	}
-	s.add(d, KindPopular, hit.dist, distance.Classify(d.key, hit.targets[0]), display)
+	var targetRank int
+	if r, ok := set.Rank(hit.targets[0]); ok {
+		targetRank = r
+	}
+	s.add(d, KindPopular, hit.dist, distance.Classify(d.key, hit.targets[0]), display, targetRank)
 }
 
 // nearest returns the closest corpus keys to key within maxDist.
@@ -264,7 +271,18 @@ func nearest(set *corpus.Set, key string, maxDist int) popularHit {
 			best.targets = append(best.targets, c)
 		}
 	})
-	sort.Strings(best.targets)
+	sort.Slice(best.targets, func(i, j int) bool {
+		ri, oki := set.Rank(best.targets[i])
+		rj, okj := set.Rank(best.targets[j])
+		switch {
+		case oki && okj && ri != rj:
+			return ri < rj
+		case oki != okj:
+			return oki
+		default:
+			return best.targets[i] < best.targets[j]
+		}
+	})
 	if len(best.targets) > maxSuggestions {
 		best.targets = best.targets[:maxSuggestions]
 	}
@@ -368,7 +386,7 @@ func (s *scanner) checkPeers(decls []decl) {
 			_, gLeaf := g.eco.Namespace(h.goods[0])
 			tech := distance.Classify(tLeaf, gLeaf)
 			for _, d := range g.names[typo] {
-				s.add(d, KindScopePeer, h.dist, tech, h.goods)
+				s.add(d, KindScopePeer, h.dist, tech, h.goods, 0)
 			}
 		}
 	}
@@ -410,7 +428,7 @@ func pickTypo(a, aLeaf, b, bLeaf string, set *corpus.Set) (typo, good string) {
 	}
 }
 
-func (s *scanner) add(d decl, kind Kind, dist int, tech distance.Technique, targets []string) {
+func (s *scanner) add(d decl, kind Kind, dist int, tech distance.Technique, targets []string, targetRank int) {
 	key := strings.Join([]string{d.eco.Name, d.rel, d.key, string(kind)}, "\x00")
 	if _, dup := s.reported[key]; dup {
 		return
@@ -425,6 +443,7 @@ func (s *scanner) add(d decl, kind Kind, dist int, tech distance.Technique, targ
 		Group:       d.dep.Group,
 		Distance:    dist,
 		Suggestions: targets,
+		TargetRank:  targetRank,
 		Kind:        kind,
 		Severity:    severityFor(kind, dist),
 		Technique:   tech,

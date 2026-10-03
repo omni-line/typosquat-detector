@@ -82,6 +82,9 @@ PR so we can design it properly.
 ## Popular package corpus
 
 Snapshots live in `internal/corpus/<ecosystem>.json.gz` and are embedded at build time.
+Each file is a gzipped JSON array of `{"name","rank"}` objects (1-based download
+rank), sorted alphabetically so monthly refresh diffs stay reviewable.
+`meta.json` records `ordered_by: downloads` per ecosystem.
 
 ```bash
 make corpus   # regenerates from public sources (needs network)

@@ -184,6 +184,9 @@ func writeSARIF(w io.Writer, res *scan.Result, opts Options) error {
 			"severity":    f.Severity,
 			"kind":        f.Kind,
 		}
+		if f.TargetRank > 0 {
+			props["target_rank"] = f.TargetRank
+		}
 		for k, v := range map[string]string{
 			"version": f.Version, "group": f.Group, "technique": string(f.Technique),
 			"purl": f.PURL, "registry_url": f.RegistryURL, "suggestion_url": f.SuggestionURL,

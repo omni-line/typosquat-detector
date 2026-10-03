@@ -76,7 +76,7 @@ func writeFinding(w io.Writer, c Palette, f scan.Finding) {
 	field := func(name, value string) {
 		fmt.Fprintf(w, "  %s %s\n", c.Dim(fmt.Sprintf("%-13s", name)), value)
 	}
-	field("did you mean", c.BoldGreen(strings.Join(cleanAll(f.Suggestions), ", ")))
+	field("did you mean", c.BoldGreen(suggestionList(f)))
 	field("why", reason(f))
 	if f.RegistryURL != "" {
 		field("compare", clean(f.RegistryURL))
@@ -99,10 +99,23 @@ func writeCompact(w io.Writer, c Palette, f scan.Finding) {
 		clean(f.Ecosystem),
 		c.Bold(label),
 		location(f),
-		strings.Join(cleanAll(f.Suggestions), ","),
+		suggestionList(f),
 		f.Technique,
 		f.Distance,
 	)
+}
+
+// suggestionList formats suggestions, annotating the primary target with its
+// download rank when available (e.g. "cross-env (#214 on npm)").
+func suggestionList(f scan.Finding) string {
+	if len(f.Suggestions) == 0 {
+		return ""
+	}
+	parts := cleanAll(f.Suggestions)
+	if f.TargetRank > 0 {
+		parts[0] = fmt.Sprintf("%s (#%d on %s)", parts[0], f.TargetRank, clean(f.Ecosystem))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func writeWarnings(w io.Writer, c Palette, warnings []scan.Warning) {

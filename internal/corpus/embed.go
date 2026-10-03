@@ -1,9 +1,9 @@
 // Package corpus loads embedded popular-package name snapshots.
 //
-// Each ecosystem ships one gzip-compressed JSON array of package names named
+// Each ecosystem ships one gzip-compressed JSON snapshot named
 // "<ecosystem>.json.gz" next to this file, plus a shared meta.json written by
-// scripts/update-corpus. Adding a registry only requires a new snapshot file
-// and an entry in the update script; no code changes here.
+// scripts/update-corpus. Snapshots are either a JSON array of
+// {"name","rank"} objects (preferred) or a legacy array of name strings.
 package corpus
 
 import (
@@ -34,8 +34,15 @@ type Meta struct {
 
 // EcosystemMeta describes one ecosystem snapshot.
 type EcosystemMeta struct {
-	Count  int    `json:"count"`
-	Source string `json:"source"`
+	Count     int    `json:"count"`
+	Source    string `json:"source"`
+	OrderedBy string `json:"ordered_by,omitempty"`
+}
+
+// Entry is one popular package with an optional 1-based download rank.
+type Entry struct {
+	Name string `json:"name"`
+	Rank int    `json:"rank,omitempty"`
 }
 
 // ErrUnknown is returned when no snapshot exists for an ecosystem.
@@ -81,16 +88,16 @@ func Load(name string, normalize func(string) string) (*Set, error) {
 	if err != nil {
 		return nil, err
 	}
-	names, err := decode(raw)
+	entries, err := decode(raw)
 	if err != nil {
 		return nil, fmt.Errorf("corpus %s: %w", name, err)
 	}
-	s := NewSet(names, normalize)
+	s := NewSet(entries, normalize)
 	sets[name] = s
 	return s, nil
 }
 
-func decode(raw []byte) ([]string, error) {
+func decode(raw []byte) ([]Entry, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
@@ -103,29 +110,55 @@ func decode(raw []byte) ([]string, error) {
 	if len(data) > maxSnapshotSize {
 		return nil, errors.New("snapshot exceeds size limit")
 	}
+	var entries []Entry
+	if err := json.Unmarshal(data, &entries); err == nil && looksLikeEntries(entries) {
+		return entries, nil
+	}
 	var names []string
 	if err := json.Unmarshal(data, &names); err != nil {
 		return nil, err
 	}
-	return names, nil
+	out := make([]Entry, 0, len(names))
+	for _, n := range names {
+		out = append(out, Entry{Name: n})
+	}
+	return out, nil
+}
+
+// looksLikeEntries distinguishes [{"name":"x"}] from a legacy ["x"] decode
+// that would produce zero-value Entry structs if unmarshaled into []Entry.
+func looksLikeEntries(entries []Entry) bool {
+	if len(entries) == 0 {
+		return true
+	}
+	for _, e := range entries {
+		if e.Name != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Set is an indexed popular-name corpus for one ecosystem. Lookups use
 // normalized keys; Display maps a key back to the registry spelling.
 type Set struct {
 	display    map[string]string
+	rank       map[string]int
 	byLen      map[int][]string
 	byStripped map[int][]string
 }
 
-// NewSet indexes names for exact and length-bucketed lookup.
-func NewSet(names []string, normalize func(string) string) *Set {
+// NewSet indexes entries for exact and length-bucketed lookup.
+// When two names normalize to the same key, the first wins for Display and Rank.
+func NewSet(entries []Entry, normalize func(string) string) *Set {
 	s := &Set{
-		display:    make(map[string]string, len(names)),
+		display:    make(map[string]string, len(entries)),
+		rank:       make(map[string]int, len(entries)),
 		byLen:      make(map[int][]string),
 		byStripped: make(map[int][]string),
 	}
-	for _, n := range names {
+	for _, e := range entries {
+		n := e.Name
 		key := n
 		if normalize != nil {
 			key = normalize(n)
@@ -137,6 +170,9 @@ func NewSet(names []string, normalize func(string) string) *Set {
 			continue
 		}
 		s.display[key] = n
+		if e.Rank > 0 {
+			s.rank[key] = e.Rank
+		}
 		s.byLen[len(key)] = append(s.byLen[len(key)], key)
 		sl := strippedLen(key)
 		s.byStripped[sl] = append(s.byStripped[sl], key)
@@ -147,6 +183,15 @@ func NewSet(names []string, normalize func(string) string) *Set {
 		}
 	}
 	return s
+}
+
+// NewSetNames is a convenience for tests that only have bare names.
+func NewSetNames(names []string, normalize func(string) string) *Set {
+	entries := make([]Entry, len(names))
+	for i, n := range names {
+		entries[i] = Entry{Name: n}
+	}
+	return NewSet(entries, normalize)
 }
 
 // Contains reports whether key is an exact corpus member.
@@ -166,6 +211,16 @@ func (s *Set) Display(key string) string {
 		}
 	}
 	return key
+}
+
+// Rank returns the 1-based download rank for key when the corpus is
+// rank-ordered. ok is false when the snapshot has no ranks or key is unknown.
+func (s *Set) Rank(key string) (rank int, ok bool) {
+	if s == nil {
+		return 0, false
+	}
+	rank, ok = s.rank[key]
+	return rank, ok
 }
 
 // Candidates calls fn for every corpus key that could be within maxDist of

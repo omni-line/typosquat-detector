@@ -87,6 +87,15 @@ func TestClassicTypos(t *testing.T) {
 	if got["crossenv"].PURL != "pkg:npm/crossenv" || got["crossenv"].SuggestionURL != "https://www.npmjs.com/package/cross-env" {
 		t.Errorf("identifiers: %+v", got["crossenv"])
 	}
+	if got["crossenv"].TargetRank < 1 {
+		t.Errorf("crossenv target_rank=%d want popular rank", got["crossenv"].TargetRank)
+	}
+	if got["reqeusts"].TargetRank < 1 {
+		t.Errorf("reqeusts target_rank=%d want popular rank", got["reqeusts"].TargetRank)
+	}
+	if got["@acme/authh"].TargetRank != 0 {
+		t.Errorf("scope-peer should omit target_rank, got %d", got["@acme/authh"].TargetRank)
+	}
 }
 
 func TestEveryLocationReported(t *testing.T) {

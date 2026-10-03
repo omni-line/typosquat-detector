@@ -65,14 +65,14 @@ Example text output:
 ✗ 4 typosquat findings: 3 critical, 1 high
 
 CRITICAL  npm  crossenv@7.0.3  npm-typos/package.json:4 (dependencies)
-  did you mean  cross-env
+  did you mean  cross-env (#625 on npm)
   why           differs only by '-', '_' or '.' separators · 1 edit from a popular npm package
   compare       https://www.npmjs.com/package/crossenv
                 https://www.npmjs.com/package/cross-env
   fix           use "cross-env" if that was intended; if "crossenv" is genuinely yours, add --allow crossenv
 
 CRITICAL  pypi  reqeusts@2.1.0  pypi-typos/requirements.txt:2 (requirements)
-  did you mean  requests
+  did you mean  requests (#7 on pypi)
   why           two adjacent characters swapped · 1 edit from a popular pypi package
   compare       https://pypi.org/project/reqeusts/
                 https://pypi.org/project/requests/
@@ -90,7 +90,7 @@ Corpus 2026-10-01 (npm 5,247, pypi 10,000 top packages) · max distance 2
 `-q` prints one grep-friendly line per finding:
 
 ```text
-CRITICAL npm crossenv@7.0.3 npm-typos/package.json:4 (dependencies) -> cross-env (separator, distance 1)
+CRITICAL npm crossenv@7.0.3 npm-typos/package.json:4 (dependencies) -> cross-env (#625 on npm) (separator, distance 1)
 ```
 
 ## How it works
